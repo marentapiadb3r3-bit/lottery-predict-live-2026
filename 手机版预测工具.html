@@ -14,6 +14,7 @@ body{background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",
 .head p{font-size:12px;opacity:.85;margin-top:4px}
 .btn{width:100%;padding:14px;border:0;border-radius:10px;background:var(--green);color:#fff;font-size:16px;font-weight:800;cursor:pointer;margin:14px 0 6px}
 .btn:active{transform:translateY(1px)}
+.btn.small{width:auto;padding:8px 14px;font-size:13px;margin-top:8px}
 .note{font-size:12px;color:var(--muted);margin:6px 2px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}
 .card h2{font-size:16px;font-weight:800;margin-bottom:10px}
@@ -54,12 +55,14 @@ th{background:var(--soft);color:var(--green2)}
 
   <div class="tabs">
     <button class="tab active" data-panel="one">本期一注</button>
+    <button class="tab" data-panel="plans">多注方案</button>
     <button class="tab" data-panel="funnel">分层漏斗</button>
     <button class="tab" data-panel="trend">走势冷热</button>
     <button class="tab" data-panel="back">历史回测</button>
   </div>
 
   <div class="panel active" id="panel-one"></div>
+  <div class="panel" id="panel-plans"></div>
   <div class="panel" id="panel-funnel"></div>
   <div class="panel" id="panel-trend"></div>
   <div class="panel" id="panel-back"></div>
@@ -155,6 +158,84 @@ function funnelPick(game,train){
 }
 function fmt(game,combo){const a=combo[0].map(n2).join('  '), b=game==='dlt'?combo[1].map(n2).join('  '):n2(combo[1][0]);return a+'  +  <span class="back">'+b+'</span>'}
 function layerHtml(label,nums,ranges,zone,K,k,extra=''){const counts=ranges.map(([lo,hi])=>nums.filter(n=>n>=lo&&n<=hi).length);const exp=k*nums.length/K,p1=1-nCr(K-nums.length,k)/nCr(K,k);return '<div class="layer"><div class="t">'+label+'</div><div class="nums">'+nums.map(n2).join(' ')+'</div><div class="p">三区域 '+counts.join('/')+'；期望命中 '+exp.toFixed(2)+' 个，至少1个约 '+(p1*100).toFixed(1)+'%'+(extra?'；'+extra:'')+'</div></div>'}
+const PLAN_TEXT = {};
+function sortedByScore(arr, zone){return arr.slice().sort((a,b)=>zone.scores[b-1]-zone.scores[a-1])}
+function planCombos(mainPool,k,backPool,backK,limit){
+  const res=[], seen=new Set();let bi=0;
+  outer: for(const mc of combos(mainPool,k)){
+    const nums=mc.slice().sort((a,b)=>a-b);
+    for(let j=0;j<backPool.length;j++){
+      let bc;
+      if(backK===2){
+        const a=backPool[(bi+j)%backPool.length], b=backPool[(bi+j+1)%backPool.length];
+        if(a===b) continue;
+        bc=[a,b].sort((x,y)=>x-y);
+      } else {
+        bc=[backPool[(bi+j)%backPool.length]];
+      }
+      const key=JSON.stringify([nums,bc]);
+      if(!seen.has(key)){seen.add(key);res.push({nums,back:bc});if(res.length>=limit)break outer}
+    }
+    bi++;
+  }
+  return res;
+}
+function fmtPlanTicket(game,p){const a=p.nums.map(n2).join(' ');const b=game==='dlt'?p.back.map(n2).join(' '):n2(p.back[0]);return a+' + '+b}
+function danTuoPlan(game,pred){
+  const main=game==='dlt'?'front':'red', k=game==='dlt'?5:6;
+  const z60=pred.zones.main60, back=game==='dlt'?pred.zones.back150:pred.zones.back150;
+  const l3=sortedByScore(pred.layers.main[2],z60);
+  const l2=sortedByScore(pred.layers.main[1],z60);
+  const dan=l3.slice(0,3);
+  const tuo=l2.filter(n=>!dan.includes(n)).slice(0,5);
+  const backPool=sortedByScore(pred.layers.back[1],back).slice(0,game==='dlt'?2:1);
+  const res=[];
+  for(const c of combos(tuo, k-dan.length)){
+    const nums=dan.concat(c).sort((a,b)=>a-b);
+    res.push({nums,back:backPool});
+  }
+  return res;
+}
+function plansHtml(dlt,ssq){
+  const dltMain=sortedByScore(dlt.layers.main[2],dlt.zones.main60).slice(0,6);
+  const dltBack=sortedByScore(dlt.layers.back[1],dlt.zones.back150).slice(0,2);
+  const dlt6=dltMain.length>=6&&dltBack.length>=2?planCombos(dltMain,5,dltBack,2,6):[];
+  const dltPack=planCombos(sortedByScore(dlt.layers.main[1],dlt.zones.main60),5,sortedByScore(dlt.layers.back[1],dlt.zones.back150),2,210);
+  const dltDan=danTuoPlan('dlt',dlt);
+  const ssqLayer=sortedByScore(ssq.layers.main[2],ssq.zones.main60);
+  const ssqExtra=sortedByScore(ssq.layers.main[1],ssq.zones.main60).filter(n=>!ssqLayer.includes(n));
+  const ssqMain=ssqLayer.concat(ssqExtra).slice(0,10);
+  const ssqBack=sortedByScore(ssq.layers.back[1],ssq.zones.back150).slice(0,1);
+  const ssq210=ssqMain.length>=10&&ssqBack.length>=1?planCombos(ssqMain,6,ssqBack,1,210):[];
+  const ssqPack=planCombos(sortedByScore(ssq.layers.main[1],ssq.zones.main60),6,sortedByScore(ssq.layers.back[1],ssq.zones.back150),1,210);
+  const ssqDan=danTuoPlan('ssq',ssq);
+  PLAN_TEXT['dlt_single']=fmtPlanTicket('dlt',{nums:dlt.combo[0],back:dlt.combo[1]});
+  PLAN_TEXT['dlt_6']=dlt6.map(p=>fmtPlanTicket('dlt',p)).join('\n');
+  PLAN_TEXT['dlt_210']=dltPack.map(p=>fmtPlanTicket('dlt',p)).join('\n');
+  PLAN_TEXT['dlt_dan']=dltDan.map(p=>fmtPlanTicket('dlt',p)).join('\n');
+  PLAN_TEXT['ssq_single']=fmtPlanTicket('ssq',{nums:ssq.combo[0],back:ssq.combo[1]});
+  PLAN_TEXT['ssq_210']=ssq210.map(p=>fmtPlanTicket('ssq',p)).join('\n');
+  PLAN_TEXT['ssq_pack']=ssqPack.map(p=>fmtPlanTicket('ssq',p)).join('\n');
+  PLAN_TEXT['ssq_dan']=ssqDan.map(p=>fmtPlanTicket('ssq',p)).join('\n');
+  function block(title,desc,tickets,count,key){
+    return '<div class="card"><h2>'+title+'</h2><p class="note">'+desc+'</p><div class="nums">'+tickets.slice(0,4).map(t=>fmtPlanTicket(title.indexOf('双色球')>=0?'ssq':'dlt',t)).join('<br>')+'</div><p class="note">共 '+count+' 注</p><button class="btn small copy-btn" data-key="'+key+'">复制全部</button></div>';
+  }
+  let h='<div class="card"><h2>给客户的多注方案</h2><p class="note">个人自用保留单式一注；客户版提供复式、胆拖和210注组合包。</p></div>';
+  h+='<div class="card"><h2>大乐透</h2><p class="note">个人单式：'+PLAN_TEXT['dlt_single']+'</p></div>';
+  h+=block('大乐透 6+2 复式','6个前区 + 2个后区',dlt6,dlt6.length,'dlt_6');
+  h+=block('大乐透 胆拖','3胆 + 5拖 + 2后区',dltDan,dltDan.length,'dlt_dan');
+  h+=block('大乐透 210注组合包','210注单式组合',dltPack,Math.min(210,dltPack.length),'dlt_210');
+  h+='<div class="card"><h2>双色球</h2><p class="note">个人单式：'+PLAN_TEXT['ssq_single']+'</p></div>';
+  h+=block('双色球 10+1 复式','10个红球 + 1个蓝球',ssq210,Math.min(210,ssq210.length),'ssq_210');
+  h+=block('双色球 胆拖','3胆 + 5拖 + 1蓝球',ssqDan,ssqDan.length,'ssq_dan');
+  h+=block('双色球 210注组合包','210注单式组合',ssqPack,Math.min(210,ssqPack.length),'ssq_pack');
+  return h;
+}
+function copyPlan(key){
+  const text=PLAN_TEXT[key]||'';
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(()=>alert('已复制 '+text.split('\n').length+' 注'))}
+  else alert('当前浏览器不支持一键复制');
+}
 function render(){
   const dltTrain=DLT.slice().reverse().slice(0,DLT.length-1);
   const ssqTrain=SSQ.slice().reverse().slice(0,SSQ.length-1);
@@ -163,6 +244,7 @@ function render(){
   document.getElementById('dataDate').textContent=CFG.generated_at.slice(0,10);
   const one='<div class="game">'+gameCard('大乐透',CFG.dlt_future[0],CFG.dlt_schedule[0].date,fmt('dlt',dlt.combo),dlt)+gameCard('双色球',CFG.ssq_future[0],CFG.ssq_schedule[0].date,fmt('ssq',ssq.combo),ssq)+'</div>';
   document.getElementById('panel-one').innerHTML=one;
+  document.getElementById('panel-plans').innerHTML=plansHtml(dlt,ssq);
   document.getElementById('panel-funnel').innerHTML=funnelHtml('大乐透',dlt)+funnelHtml('双色球',ssq);
   document.getElementById('panel-trend').innerHTML=trendHtml('大乐透',dlt)+trendHtml('双色球',ssq);
   document.getElementById('panel-back').innerHTML=backHtml();
@@ -173,6 +255,7 @@ function funnelHtml(name,pred){const game=name==='大乐透'?'dlt':'ssq', main=g
 function trendHtml(name,pred){const game=name==='大乐透'?'dlt':'ssq', main=game==='dlt'?'front':'red', by={};pred.zones.mainFull.features.forEach(f=>by[f.number]=f);let h='<div class="card"><h2>'+name+' 走势冷热</h2><table><tr><th>号码</th><th>近30期</th><th>遗漏</th><th>近5期</th><th>热冷</th><th>大众度</th></tr>';pred.combo[0].forEach(n=>{const f=by[n];h+='<tr><td>'+n2(n)+'</td><td>'+f.count30+'</td><td>'+f.gap+'</td><td>'+f.recent5+'</td><td>'+f.hotCold+'</td><td>'+f.popularity+'</td></tr>'});h+='</table></div>';return h}
 function backHtml(){const row=(g)=>{const b=BT[g];return '<tr><td>'+ (g==='dlt'?'大乐透':'双色球') +'</td><td>'+b.any_prize+'%</td><td>'+b.layer1+'</td><td>'+b.layer2+'</td><td>'+b.layer3+'</td><td>'+(g==='dlt'?'6.67%':'6.71%')+'</td></tr>'};return '<div class="card"><h2>历史回测（200期）</h2><table><tr><th>玩法</th><th>任意奖级</th><th>第1层</th><th>第2层</th><th>第3层</th><th>随机理论</th></tr>'+row('dlt')+row('ssq')+'</table><div class="ref">回测显示模型命中率低于随机基线，说明工具不能提高单注中奖概率，仅用于研究与娱乐。</div></div>'}
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('panel-'+b.dataset.panel).classList.add('active')}));
+document.addEventListener('click',function(e){var b=e.target.closest?e.target.closest('.copy-btn'):null;if(b)copyPlan(b.getAttribute('data-key'));});
 document.getElementById('runBtn').addEventListener('click',render);
 render();
 </script>
