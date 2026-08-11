@@ -1,0 +1,30 @@
+name: Auto Update
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run prediction
+        run: python lottery_workflow.py --headless
+      - name: Build mobile page
+        run: python build_mobile_tool.py
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "auto update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi

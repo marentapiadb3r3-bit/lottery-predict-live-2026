@@ -1,0 +1,13 @@
+{
+  "weights": {
+    "bayes": 0.35,
+    "hot": 0.25,
+    "cold": 0.2,
+    "trend": 0.2
+  },
+  "position_boost": 0.2,
+  "pool_size": {
+    "dlt_front": 15,
+    "ssq_red": 16
+  }
+}
