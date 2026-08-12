@@ -79,40 +79,30 @@ def fetch_json(url, referer):
         "Referer": referer,
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
-    if os.environ.get("LOTTERY_USE_CURL") == "1":
-        cmd = [
-            "curl",
-            "-s",
-            "-L",
-            "-A",
-            headers["User-Agent"],
-            "-H",
-            "Referer: " + referer,
-            url,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=90)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr or "网络请求失败")
-        return json.loads(proc.stdout)
+    cmd = [
+        "curl",
+        "-s",
+        "-L",
+        "-A",
+        headers["User-Agent"],
+        "-H",
+        "Referer: " + referer,
+        url,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=90)
+    if proc.returncode == 0:
+        try:
+            return json.loads(proc.stdout)
+        except Exception:
+            pass
+    if os.name == "nt":
+        raise RuntimeError(proc.stderr or "网络请求失败")
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception:
-        cmd = [
-            "curl",
-            "-s",
-            "-L",
-            "-A",
-            headers["User-Agent"],
-            "-H",
-            "Referer: " + referer,
-            url,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=90)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr or "网络请求失败")
-        return json.loads(proc.stdout)
+        raise RuntimeError(proc.stderr or "网络请求失败")
 
 
 def fetch_dlt_history(limit=500):
@@ -404,6 +394,12 @@ def zone_bayes(train, zone_name, k_total, k_per_draw, window=500, alpha=1.0):
                 "recent5": recent5[i],
                 "gap": gap,
                 "z500": round(z500[i], 2),
+                "hotCold": (
+                    "热"
+                    if counts_30[i] >= math.ceil(30 * k_per_draw / k_total * 1.2)
+                    else "冷" if gap >= expected_gap * 1.5 else "中"
+                ),
+                "popularity": "大众" if i + 1 <= 31 else "非大众",
             }
         )
     rank_bayes = percentile_ranks(bayes)
@@ -421,6 +417,7 @@ def zone_bayes(train, zone_name, k_total, k_per_draw, window=500, alpha=1.0):
         feat["score"] = round(scores[i], 4)
     return {
         "scores": scores,
+        "bayes": bayes,
         "counts": counts,
         "features": features,
         "mean": mean,
@@ -554,60 +551,130 @@ def balanced_layer(zone, pool, target, min_per_region, ranges):
     return sorted(result)
 
 
+def region_round(zone, pool, ranges, removes):
+    """只按区域独立排除，不混区筛选。"""
+    result = list(pool)
+    for (lo, hi), remove_count in zip(ranges, removes):
+        region_nums = [n for n in result if lo <= n <= hi]
+        if len(region_nums) <= remove_count + 1:
+            continue
+        region_nums.sort(key=lambda n: zone["scores"][n - 1])
+        drop = set(region_nums[:remove_count])
+        result = [n for n in result if n not in drop]
+    return sorted(result)
+
+
 def pick_funnel_combo(game, train):
-    """分层漏斗：20 -> 15 -> 8-10 -> 单注，每层按三区域划分。"""
+    """四区域独立漏斗：前区三区+后区，每层只在各自区域内排除。"""
     state = load_model_state()
     boost = state["position_boost"]
     if game == "dlt":
         main_zone, main_k, main_K = "front", 5, 35
         back_zone, back_k, back_K = "back", 2, 12
-        layer3_key = "dlt"
     else:
         main_zone, main_k, main_K = "red", 6, 33
         back_zone, back_k, back_K = "blue", 1, 16
-        layer3_key = "ssq"
 
+    ranges = region_ranges(game, main_zone)
     z_full = zone_bayes(train, main_zone, main_K, main_k, window=500)
-    layer1 = balanced_layer(
-        z_full, list(range(1, main_K + 1)), 20, 4, region_ranges(game, main_zone)
-    )
+    layer1 = region_round({"scores": z_full["bayes"]}, list(range(1, main_K + 1)), ranges, [2, 2, 2])
     z150 = zone_bayes(train, main_zone, main_K, main_k, window=150)
-    layer2 = balanced_layer(z150, layer1, 15, 3, region_ranges(game, main_zone))
+    layer2 = region_round({"scores": z150["bayes"]}, layer1, ranges, [3, 3, 3])
     z60 = zone_bayes(train, main_zone, main_K, main_k, window=60)
-    layer3_size = state["layer3_size"][layer3_key]
-    layer3 = balanced_layer(z60, layer2, layer3_size, 2, region_ranges(game, main_zone))
+    layer3 = region_round({"scores": z60["bayes"]}, layer2, ranges, [4, 4, 4])
+    if len(layer3) < main_k + 3:
+        extra = [n for n in layer2 if n not in layer3]
+        extra.sort(key=lambda n: z60["bayes"][n - 1], reverse=True)
+        layer3 = sorted(layer3 + extra[: main_k + 3 - len(layer3)])
+    target_unusual = 2 if game == "dlt" else 3
+    by60 = {f["number"]: f for f in z60["features"]}
+    unusual_in_l3 = sum(1 for n in layer3 if by60.get(n, {}).get("hotCold") != "热")
+    if unusual_in_l3 < target_unusual:
+        unusual_candidates = [
+            n for n in layer2
+            if n not in layer3 and by60.get(n, {}).get("hotCold") != "热"
+        ]
+        unusual_candidates.sort(key=lambda n: z60["bayes"][n - 1], reverse=True)
+        need = target_unusual - unusual_in_l3
+        layer3 = sorted(layer3 + unusual_candidates[:need])
+    unusual_in_l3 = sum(1 for n in layer3 if by60.get(n, {}).get("hotCold") != "热")
+    ideal_unusual = min(target_unusual, unusual_in_l3)
 
-    best_main = None
-    best_main_score = -1
+    back_ranges = [(1, back_K)]
+    zb_full = zone_bayes(train, back_zone, back_K, back_k, window=500)
+    bl1 = region_round({"scores": zb_full["bayes"]}, list(range(1, back_K + 1)), back_ranges, [2 if game == "dlt" else 6])
+    zb150 = zone_bayes(train, back_zone, back_K, back_k, window=150)
+    bl2 = region_round({"scores": zb150["bayes"]}, bl1, back_ranges, [3])
+    zb60 = zone_bayes(train, back_zone, back_K, back_k, window=60)
+    bl3 = region_round({"scores": zb60["bayes"]}, bl2, back_ranges, [4])
+    if len(bl3) < back_k + 1:
+        extra = [n for n in bl2 if n not in bl3]
+        extra.sort(key=lambda n: zb60["bayes"][n - 1], reverse=True)
+        bl3 = sorted(bl3 + extra[: back_k + 1 - len(bl3)])
+
+    def unconventional_bonus(nums):
+        feats = z_full["features"]
+        by = {f["number"]: f for f in feats}
+        non = sum(1 for n in nums if n > 31)
+        cold = sum(1 for n in nums if by.get(n, {}).get("hotCold") == "冷")
+        unusual = sum(1 for n in nums if by.get(n, {}).get("hotCold") != "热")
+        ideal_unusual = 2 if game == "dlt" else 3
+        penalty = 0.02 * abs(unusual - ideal_unusual)
+        reward = 0.05 if unusual == ideal_unusual else 0
+        return reward - penalty
+
+    def unusual_count(nums):
+        return sum(1 for n in nums if by60.get(n, {}).get("hotCold") != "热")
+
+    ranked_main = []
     for comb_idx in itertools.combinations(layer3, main_k):
         nums = tuple(sorted(comb_idx))
-        score = sum(z60["scores"][n - 1] for n in nums)
-        score *= 1 + boost * position_fit(z_full, nums)
-        if score > best_main_score:
-            best_main_score = score
-            best_main = nums
-
-    zb_full = zone_bayes(train, back_zone, back_K, back_k, window=500)
-    bl1 = balanced_layer(
-        zb_full, list(range(1, back_K + 1)), 8, 2, region_ranges(game, back_zone)
-    )
-    zb150 = zone_bayes(train, back_zone, back_K, back_k, window=150)
-    bl2 = balanced_layer(zb150, bl1, 5, 1, region_ranges(game, back_zone))
+        base_score = sum(z60["bayes"][n - 1] for n in nums)
+        base_score *= 1 + boost * position_fit(z_full, nums)
+        ranked_main.append((base_score, nums))
+    ranked_main.sort(key=lambda x: x[0], reverse=True)
+    top_main = ranked_main[:20]
+    best_main = min(
+        top_main,
+        key=lambda item: (abs(unusual_count(item[1]) - ideal_unusual), -item[0]),
+    )[1]
 
     if game == "dlt":
         best_back = None
         best_back_score = -1
-        for comb_idx in itertools.combinations(bl2, 2):
+        for comb_idx in itertools.combinations(bl3, 2):
             nums = tuple(sorted(comb_idx))
-            score = sum(zb150["scores"][n - 1] for n in nums)
+            score = sum(zb60["bayes"][n - 1] for n in nums)
             score *= 1 + boost * position_fit(zb_full, nums)
             if score > best_back_score:
                 best_back_score = score
                 best_back = nums
         combo = (best_main, best_back)
     else:
-        best_blue = max(bl2, key=lambda n: zb150["scores"][n - 1])
+        best_blue = max(bl3, key=lambda n: zb60["bayes"][n - 1])
         combo = (best_main, (best_blue,))
+
+    feats_by = {f["number"]: f for f in z_full["features"]}
+    non_nums = [n for n in best_main if n > 31]
+    cold_nums = [n for n in best_main if feats_by.get(n, {}).get("hotCold") == "冷"]
+    hot_nums = [n for n in best_main if feats_by.get(n, {}).get("hotCold") == "热"]
+    unusual_nums = [n for n in best_main if feats_by.get(n, {}).get("hotCold") != "热"]
+    reasons = []
+    if non_nums:
+        reasons.append("包含非大众号 " + " ".join(f"{n:02d}" for n in non_nums))
+    if cold_nums:
+        reasons.append("包含长遗漏冷号 " + " ".join(f"{n:02d}" for n in cold_nums))
+    if hot_nums:
+        reasons.append("包含近期热号 " + " ".join(f"{n:02d}" for n in hot_nums))
+    reasons.append(
+        f"反常规度适中：非热号 {len(unusual_nums)} 个（含中性/冷号），"
+        "整体看起来不太可能但不至于完全离谱"
+    )
+    reasons.append(
+        f"第3层候选主 {len(layer3)} 个号码，组合为 {comb(len(layer3), main_k)} 注，"
+        "该组合综合数学分最高且反常规度较高"
+    )
+    selection_reason = "；".join(reasons)
 
     history_keys = set()
     for row in train:
@@ -753,12 +820,14 @@ def pick_funnel_combo(game, train):
     return {
         "game": game,
         "combo": combo,
+        "candidate_main_count": math.comb(len(layer3), main_k),
+        "selection_reason": selection_reason,
         "repeat_adjusted": repeat_adjusted,
         "recent_repeat_adjusted": recent_repeat_adjusted,
         "prize_repeat_adjusted": prize_repeat_adjusted,
         "layers": {
             "main": [layer1, layer2, layer3],
-            "back": [bl1, bl2],
+            "back": [bl1, bl2, bl3],
         },
         "zones": {
             "main_full": z_full,
@@ -766,8 +835,122 @@ def pick_funnel_combo(game, train):
             "main_60": z60,
             "back_full": zb_full,
             "back_150": zb150,
+            "back_60": zb60,
         },
     }
+
+
+def method_ticket(game, train, method, seed=20260812):
+    """每种方法各出一注，主推方法为贝叶斯模型平均。"""
+    if method == "funnel":
+        return {
+            "method": "funnel",
+            "note": "四区域独立分层漏斗",
+            "combo": pick_funnel_combo(game, train)["combo"],
+        }
+    state = load_model_state()
+    boost = state["position_boost"]
+    if game == "dlt":
+        main_zone, main_k, main_K = "front", 5, 35
+        back_zone, back_k, back_K = "back", 2, 12
+    else:
+        main_zone, main_k, main_K = "red", 6, 33
+        back_zone, back_k, back_K = "blue", 1, 16
+
+    z500 = zone_bayes(train, main_zone, main_K, main_k, window=500)
+    z150 = zone_bayes(train, main_zone, main_K, main_k, window=150)
+    z60 = zone_bayes(train, main_zone, main_K, main_k, window=60)
+    zb60 = zone_bayes(train, back_zone, back_K, back_k, window=60)
+
+    def pick_main(scores, moderate=False):
+        top = sorted(range(1, main_K + 1), key=lambda n: scores[n - 1], reverse=True)[:14]
+        ranked = []
+        for comb_idx in itertools.combinations(top, main_k):
+            nums = tuple(sorted(comb_idx))
+            s = sum(scores[n - 1] for n in nums)
+            s *= 1 + boost * position_fit(z500, nums)
+            ranked.append((s, nums))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        if not moderate:
+            return ranked[0][1]
+        by60 = {f["number"]: f for f in z60["features"]}
+        unusual_in_pool = sum(
+            1 for n in top if by60.get(n, {}).get("hotCold") != "热"
+        )
+        ideal = min(2 if game == "dlt" else 3, unusual_in_pool)
+        top20 = ranked[:20]
+        return min(
+            top20,
+            key=lambda item: (
+                abs(
+                    sum(
+                        1 for n in item[1] if by60.get(n, {}).get("hotCold") != "热"
+                    ) - ideal
+                ),
+                -item[0],
+            ),
+        )[1]
+
+    if method == "bayes_avg":
+        avg = [
+            (z500["bayes"][i] + z150["bayes"][i] + z60["bayes"][i]) / 3
+            for i in range(main_K)
+        ]
+        main = pick_main(avg, moderate=True)
+        note = "贝叶斯模型平均 + 位置后验 + 适中反常规，主推"
+    elif method == "hot":
+        hot = [f["count_30"] / max(1, min(30, z60["n"])) for f in z60["features"]]
+        main = pick_main(hot)
+        note = "短周期热度加权"
+    elif method == "cold":
+        cold = [f["gap"] / (main_K / main_k) for f in z60["features"]]
+        main = pick_main(cold)
+        note = "遗漏回归"
+    elif method == "position":
+        used = []
+        main = []
+        for p in range(main_k):
+            order = sorted(
+                range(1, main_K + 1),
+                key=lambda n: z500["position_prob"][p][n - 1],
+                reverse=True,
+            )
+            for n in order:
+                if n not in used:
+                    used.append(n)
+                    main.append(n)
+                    break
+        main = tuple(sorted(main))
+        note = "位置分布后验"
+    else:
+        rng = random.Random(seed)
+        main = tuple(sorted(rng.sample(range(1, main_K + 1), main_k)))
+        note = "随机机选对照"
+
+    if game == "dlt":
+        back = tuple(
+            sorted(
+                range(1, back_K + 1),
+                key=lambda n: zb60["bayes"][n - 1],
+                reverse=True,
+            )[:2]
+        )
+        combo = (main, back)
+    else:
+        blue = max(range(1, back_K + 1), key=lambda n: zb60["bayes"][n - 1])
+        combo = (main, (blue,))
+    return {"method": method, "note": note, "combo": combo}
+
+
+def all_method_tickets(game, train):
+    return [
+        method_ticket(game, train, "bayes_avg"),
+        method_ticket(game, train, "funnel"),
+        method_ticket(game, train, "hot"),
+        method_ticket(game, train, "cold"),
+        method_ticket(game, train, "position"),
+        method_ticket(game, train, "random"),
+    ]
 
 
 def save_pending_predictions():
@@ -1078,6 +1261,29 @@ def backtest_bayes(game, rows):
     }
 
 
+def backtest_method(game, rows, method):
+    oldest = rows_oldest_first(rows)
+    wins = 0
+    n = 0
+    for t in range(300, len(oldest)):
+        train = oldest[max(0, t - 500):t]
+        target = oldest[t]
+        if method == "funnel":
+            combo = pick_funnel_combo(game, train)["combo"]
+        else:
+            combo = method_ticket(game, train, method, seed=100000 + t)["combo"]
+        if game == "dlt":
+            fh = len(set(combo[0]) & set(target["front"]))
+            bh = len(set(combo[1]) & set(target["back"]))
+            wins += 1 if dlt_win(fh, bh) else 0
+        else:
+            rh = len(set(combo[0]) & set(target["red"]))
+            bh = combo[1][0] == target["blue"]
+            wins += 1 if ssq_win(rh, bh) else 0
+        n += 1
+    return round(wins / n * 100, 2) if n else None
+
+
 def hypergeom_at_least_one(K, k, n):
     if n <= 0 or n > K:
         return 0.0
@@ -1110,7 +1316,7 @@ def funnel_lines(pred, game):
             f"随机覆盖期望命中 {expected:.2f} 个，至少命中1个约 {p1 * 100:.1f}%"
         )
     for i, nums in enumerate(pred["layers"]["back"]):
-        label = "后区第1层" if i == 0 else "后区第2层"
+        label = "后区第" + str(i + 1) + "层"
         expected = back_k * len(nums) / back_K
         p1 = hypergeom_at_least_one(back_K, back_k, len(nums))
         lines.append(
@@ -1121,8 +1327,10 @@ def funnel_lines(pred, game):
     return lines
 
 
-def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None):
+def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None):
     reflections = reflections or []
+    method_rows = method_rows or {}
+    method_stats = method_stats or {}
     dlt_issue = config["dlt_future"][0]
     ssq_issue = config["ssq_future"][0]
     dlt_date = next(s["date"] for s in config["dlt_schedule"] if s["issue"] == dlt_issue)
@@ -1207,6 +1415,8 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
         "## 二、大乐透下一期一注",
         f"期号：{dlt_issue} · {dlt_date}",
         "一注：" + fmt_combo("dlt", dlt_combo),
+        f"候选主：{dlt_pred['candidate_main_count']} 注（第3层{len(dlt_pred['layers']['main'][2])}个前区号码中选5）",
+        f"选择原因：{dlt_pred['selection_reason']}",
         f"前区和值：{dlt_front_sum}（仅参考，不参与选号；历史均值 {dlt_main['mean']:.1f} ± {dlt_main['std']:.1f}）",
         f"后区和值：{dlt_back_sum}（仅参考，不参与选号；历史均值 {dlt_back['mean']:.1f} ± {dlt_back['std']:.1f}）",
         f"单注任意奖概率：{dlt_p*100:.2f}%（这是数学事实，不是模型给的保证）",
@@ -1214,10 +1424,12 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
         "## 三、双色球下一期一注",
         f"期号：{ssq_issue} · {ssq_date}",
         "一注：" + fmt_combo("ssq", ssq_combo),
+        f"候选主：{ssq_pred['candidate_main_count']} 注（第3层{len(ssq_pred['layers']['main'][2])}个红球号码中选6）",
+        f"选择原因：{ssq_pred['selection_reason']}",
         f"红球和值：{ssq_red_sum}（仅参考，不参与选号；历史均值 {ssq_main['mean']:.1f} ± {ssq_main['std']:.1f}）",
         f"单注任意奖概率：{ssq_p*100:.2f}%（这是数学事实，不是模型给的保证）",
         "",
-        "## 四、分层漏斗选号（20→15→8-10→单注）",
+        "## 五、分层漏斗选号（20→15→8-10→单注）",
         "",
         "每层都按三区域划分，并逐层做数学概率分析：",
         "",
@@ -1252,20 +1464,20 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
     lines.append("")
     lines.extend(
         [
-        "## 五、层覆盖目标说明",
+        "## 六、层覆盖目标说明",
         "",
         "第1层要达到100%覆盖全部实际球，唯一办法是包含全部35/33个号码，那漏斗就失去收敛意义。",
         "当前第1层20个“至少命中1个”约99%，但不能保证5/6个全中；第2层、第3层同理。",
         "这里每一层都写真实覆盖概率，不承诺100%、50%、20%的固定目标。",
         "",
-        "## 六、为什么不能提高单注概率",
+        "## 七、为什么不能提高单注概率",
         "",
         "在公平开奖下，每一注合法组合的头奖概率和任意奖概率都是固定常数。",
         "无论用贝叶斯、走势、冷热号还是位置定律，都无法改变单注概率。",
         "本流程只负责给出一注经过回测验证的确定推荐，不做“提高概率”的承诺。",
         "一等奖人数少不是“逻辑问题”，而是组合数太大：双色球总组合约1772万，即使卖出约1亿注，期望头奖人数也只有约5-6人。",
         "",
-        "## 七、回测验证（这一注方法是否经得起考验）",
+        "## 八、回测验证（这一注方法是否经得起考验）",
         "",
         "用同样的分层漏斗规则，在历史数据里逐期只用当期之前的数据生成一注，再对应当期开奖：",
         "",
@@ -1306,11 +1518,42 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
     if ssq_pred.get("prize_repeat_adjusted"):
         hist_note.append("- 双色球：所选整注曾按历史奖级命中过一至六等，已按距离偏好替换1个号码（六等奖偏好统计2+1和1+1，0+1不计入）")
     if hist_note:
-        idx = lines.index("## 四、分层漏斗选号（20→15→8-10→单注）")
+        idx = lines.index("## 五、分层漏斗选号（20→15→8-10→单注）")
         lines = lines[:idx] + hist_note + [""] + lines[idx:]
+    if method_rows:
+        method_names = {
+            "bayes_avg": "贝叶斯模型平均（主推）",
+            "funnel": "我的分层分区方法（不改）",
+            "hot": "短周期热度加权",
+            "cold": "遗漏回归",
+            "position": "位置分布后验",
+            "random": "随机机选对照",
+        }
+        ml = [
+            "## 四、全部方法对照（每方法附回测概率）",
+            "",
+            "| 方法 | 大乐透一注 | 大乐透回测 | 双色球一注 | 双色球回测 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for item in method_rows.get("dlt", []):
+            m = item["method"]
+            ssq_item = next(
+                (x for x in method_rows.get("ssq", []) if x["method"] == m), None
+            )
+            dlt_rate = method_stats.get("dlt", {}).get(m, "-")
+            ssq_rate = method_stats.get("ssq", {}).get(m, "-")
+            label = method_names.get(m, m)
+            ml.append(
+                f"| {label} | {fmt_combo('dlt', item['combo'])} | "
+                f"{dlt_rate}% | "
+                f"{fmt_combo('ssq', ssq_item['combo']) if ssq_item else '-'} | "
+                f"{ssq_rate}% |"
+            )
+        idx = lines.index("## 五、分层漏斗选号（20→15→8-10→单注）")
+        lines = lines[:idx] + ml + [""] + lines[idx:]
     trend_lines = [
         "",
-        "## 八、走势与冷热参考（只作观察，不参与真实概率）",
+        "## 九、走势与冷热参考（只作观察，不参与真实概率）",
         "",
         "### 大乐透",
         "- 前区近30期最热：" + "  ".join(n2(x) for x in top_nums(dlt_main["features"], "count_30")),
@@ -1532,6 +1775,22 @@ def main():
     ssq_train = rows_oldest_first(ssq_rows[1:])
     dlt_pred = pick_funnel_combo("dlt", dlt_train)
     ssq_pred = pick_funnel_combo("ssq", ssq_train)
+    method_rows = {
+        "dlt": all_method_tickets("dlt", dlt_train),
+        "ssq": all_method_tickets("ssq", ssq_train),
+    }
+    method_stats = {"dlt": {}, "ssq": {}}
+    for game, rows in (("dlt", dlt_rows), ("ssq", ssq_rows)):
+        for item in method_rows[game]:
+            method_stats[game][item["method"]] = backtest_method(game, rows, item["method"])
+    if args.headless:
+        save_json_file(
+            BASE / "method_comparison.json",
+            {
+                "rows": method_rows,
+                "stats": method_stats,
+            },
+        )
     print("大乐透一注：", fmt_combo("dlt", dlt_pred["combo"]))
     print("双色球一注：", fmt_combo("ssq", ssq_pred["combo"]))
 
@@ -1573,7 +1832,7 @@ def main():
             },
         )
 
-    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections)
+    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections, method_rows, method_stats)
     print("==> 本期预测已保存：", summary_path)
     print("==> 全部完成")
 
