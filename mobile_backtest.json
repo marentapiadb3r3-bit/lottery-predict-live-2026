@@ -1,20 +1,20 @@
 {
   "dlt": {
     "windows": 200,
-    "main_mean": 0.645,
-    "back_rate": 0.35,
-    "layer1_mean": 2.685,
-    "layer2_mean": 1.99,
-    "layer3_mean": 1.2,
-    "any_prize_rate": 4.0
+    "main_mean": 0.705,
+    "back_rate": 0.36,
+    "layer1_mean": 4.16,
+    "layer2_mean": 2.78,
+    "layer3_mean": 1.125,
+    "any_prize_rate": 5.0
   },
   "ssq": {
     "windows": 200,
-    "main_mean": 1.125,
-    "back_rate": 0.035,
-    "layer1_mean": 3.635,
-    "layer2_mean": 2.745,
-    "layer3_mean": 1.68,
-    "any_prize_rate": 4.0
+    "main_mean": 1.035,
+    "back_rate": 0.09,
+    "layer1_mean": 4.94,
+    "layer2_mean": 3.25,
+    "layer3_mean": 1.67,
+    "any_prize_rate": 9.5
   }
 }
