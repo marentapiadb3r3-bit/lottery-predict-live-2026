@@ -864,7 +864,7 @@ def method_ticket(game, train, method, seed=20260812):
     zb150 = zone_bayes(train, back_zone, back_K, back_k, window=150)
     zb60 = zone_bayes(train, back_zone, back_K, back_k, window=60)
 
-    def pick_main(scores, moderate=False):
+    def pick_main(scores):
         top = sorted(range(1, main_K + 1), key=lambda n: scores[n - 1], reverse=True)[:14]
         ranked = []
         for comb_idx in itertools.combinations(top, main_k):
@@ -873,8 +873,6 @@ def method_ticket(game, train, method, seed=20260812):
             s *= 1 + boost * position_fit(z500, nums)
             ranked.append((s, nums))
         ranked.sort(key=lambda x: x[0], reverse=True)
-        if not moderate:
-            return ranked[0][1]
         by60 = {f["number"]: f for f in z60["features"]}
         unusual_in_pool = sum(
             1 for n in top if by60.get(n, {}).get("hotCold") != "热"
@@ -898,7 +896,7 @@ def method_ticket(game, train, method, seed=20260812):
             (z500["bayes"][i] + z150["bayes"][i] + z60["bayes"][i]) / 3
             for i in range(main_K)
         ]
-        main = pick_main(avg, moderate=True)
+        main = pick_main(avg)
         note = "贝叶斯模型平均 + 位置后验 + 适中反常规，主推"
     elif method == "hot":
         hot = [f["count_30"] / max(1, min(30, z60["n"])) for f in z60["features"]]
@@ -909,24 +907,28 @@ def method_ticket(game, train, method, seed=20260812):
         main = pick_main(cold)
         note = "遗漏回归"
     elif method == "position":
-        used = []
-        main = []
-        for p in range(main_k):
-            order = sorted(
-                range(1, main_K + 1),
-                key=lambda n: z500["position_prob"][p][n - 1],
-                reverse=True,
-            )
-            for n in order:
-                if n not in used:
-                    used.append(n)
-                    main.append(n)
-                    break
-        main = tuple(sorted(main))
+        pos_score = [
+            max(z500["position_prob"][p][i] for p in range(main_k))
+            for i in range(main_K)
+        ]
+        main = pick_main(pos_score)
         note = "位置分布后验"
     else:
         rng = random.Random(seed)
-        main = tuple(sorted(rng.sample(range(1, main_K + 1), main_k)))
+        by60 = {f["number"]: f for f in z60["features"]}
+        ideal_unusual = 2 if game == "dlt" else 3
+        best = None
+        best_key = None
+        for _ in range(300):
+            nums = tuple(sorted(rng.sample(range(1, main_K + 1), main_k)))
+            unusual = sum(
+                1 for n in nums if by60.get(n, {}).get("hotCold") != "热"
+            )
+            key = abs(unusual - ideal_unusual)
+            if best is None or key < best_key or (key == best_key and rng.random() < 0.5):
+                best = nums
+                best_key = key
+        main = best
         note = "随机机选对照"
 
     if method == "random":
