@@ -860,6 +860,8 @@ def method_ticket(game, train, method, seed=20260812):
     z500 = zone_bayes(train, main_zone, main_K, main_k, window=500)
     z150 = zone_bayes(train, main_zone, main_K, main_k, window=150)
     z60 = zone_bayes(train, main_zone, main_K, main_k, window=60)
+    zb500 = zone_bayes(train, back_zone, back_K, back_k, window=500)
+    zb150 = zone_bayes(train, back_zone, back_K, back_k, window=150)
     zb60 = zone_bayes(train, back_zone, back_K, back_k, window=60)
 
     def pick_main(scores, moderate=False):
@@ -927,18 +929,52 @@ def method_ticket(game, train, method, seed=20260812):
         main = tuple(sorted(rng.sample(range(1, main_K + 1), main_k)))
         note = "随机机选对照"
 
-    if game == "dlt":
-        back = tuple(
-            sorted(
+    if method == "random":
+        rng_back = random.Random(seed + 7)
+        if game == "dlt":
+            back = tuple(sorted(rng_back.sample(range(1, back_K + 1), 2)))
+        else:
+            back = (rng_back.randint(1, back_K),)
+    elif method == "position":
+        used = []
+        back = []
+        for p in range(back_k):
+            order = sorted(
                 range(1, back_K + 1),
-                key=lambda n: zb60["bayes"][n - 1],
+                key=lambda n: zb500["position_prob"][p][n - 1],
                 reverse=True,
-            )[:2]
-        )
-        combo = (main, back)
+            )
+            for n in order:
+                if n not in used:
+                    used.append(n)
+                    back.append(n)
+                    break
+        back = tuple(sorted(back)) if game == "dlt" else (back[0],)
     else:
-        blue = max(range(1, back_K + 1), key=lambda n: zb60["bayes"][n - 1])
-        combo = (main, (blue,))
+        if method == "bayes_avg":
+            back_scores = [
+                (zb500["bayes"][i] + zb150["bayes"][i] + zb60["bayes"][i]) / 3
+                for i in range(back_K)
+            ]
+        elif method == "hot":
+            back_scores = [
+                f["count_30"] / max(1, min(30, zb60["n"]))
+                for f in zb60["features"]
+            ]
+        else:
+            back_scores = [f["gap"] / (back_K / back_k) for f in zb60["features"]]
+        if game == "dlt":
+            back = tuple(
+                sorted(
+                    range(1, back_K + 1),
+                    key=lambda n: back_scores[n - 1],
+                    reverse=True,
+                )[:2]
+            )
+        else:
+            blue = max(range(1, back_K + 1), key=lambda n: back_scores[n - 1])
+            back = (blue,)
+    combo = (main, back)
     return {"method": method, "note": note, "combo": combo}
 
 
