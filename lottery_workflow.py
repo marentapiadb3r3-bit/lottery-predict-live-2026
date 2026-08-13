@@ -1624,7 +1624,7 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
         lines = lines[:idx] + ml + [""] + lines[idx:]
     trend_lines = [
         "",
-        "## 九、走势与冷热参考（只作观察，不参与真实概率）",
+        "## 十、走势与冷热参考（只作观察，不参与真实概率）",
         "",
         "### 大乐透",
         "- 前区近30期最热：" + "  ".join(n2(x) for x in top_nums(dlt_main["features"], "count_30")),
@@ -1662,6 +1662,24 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
     trend_lines.extend(position_lines(ssq_main, ssq_combo[0], "红球"))
     trend_lines.extend(feature_lines(ssq_back, list(ssq_combo[1]), "蓝球"))
     trend_lines.extend(position_lines(ssq_back, list(ssq_combo[1]), "蓝球"))
+    if backtests.get("dlt") and backtests.get("ssq"):
+        dlt_l3 = backtests["dlt"].get("layer3_mean")
+        dlt_final = backtests["dlt"].get("main_mean")
+        ssq_l3 = backtests["ssq"].get("layer3_mean")
+        ssq_final = backtests["ssq"].get("main_mean")
+        diag = [
+            "## 九、偏差诊断",
+            "",
+            f"- 大乐透：第3层平均包含实际号码 {dlt_l3} 个，最终一注平均命中 {dlt_final} 个，"
+            f"最终选号阶段漏掉约 {dlt_l3 - dlt_final:.3f} 个。",
+            f"- 双色球：第3层平均包含实际号码 {ssq_l3} 个，最终一注平均命中 {ssq_final} 个，"
+            f"最终选号阶段漏掉约 {ssq_l3 - ssq_final:.3f} 个。",
+            "- 结论：主要偏差不在前几层筛选，而在最后从候选主里选一注这一步。",
+            "- 为什么没中一等奖：头奖概率固定，200期回测期望一等奖约0次；没中不是选球错误，而是数学概率。",
+            "- 建议：如果只买一注，应扩大最终候选范围并加入多样性；如果给客户，使用210注覆盖方案。",
+            "",
+        ]
+        trend_lines = diag + trend_lines
     lines.extend(trend_lines)
     out = BASE / f"本期预测_{config['generated_at'][:10]}.md"
     out.write_text("\n".join(lines), encoding="utf-8")
