@@ -23,6 +23,8 @@ def main():
     method_comparison = load("method_comparison.json") if mc_path.exists() else {}
     miss_path = BASE / "method_miss.json"
     method_miss = load("method_miss.json") if miss_path.exists() else {}
+    latest_miss_path = BASE / "latest_miss.json"
+    latest_miss = load("latest_miss.json") if latest_miss_path.exists() else {}
     bt_path = BASE / "mobile_backtest.json"
     backtest = load("mobile_backtest.json") if bt_path.exists() else {
         "dlt": {
@@ -50,6 +52,7 @@ def main():
         "backtest": backtest,
         "method_comparison": method_comparison,
         "method_miss": method_miss,
+        "latest_miss": latest_miss,
     }
     html = TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
     OUT.write_text(html, encoding="utf-8")
@@ -381,6 +384,12 @@ function methodsHtml(){
   if(miss.dlt&&miss.ssq){
     h+='<div class="card"><h2>每个方法漏球分析</h2>';
     (rows.dlt||[]).forEach(item=>{const m=item.method, dm=miss.dlt[m]||{}, sm=miss.ssq[m]||{};h+='<p class="note">'+(names[m]||m)+'：大乐透漏开奖球 '+fmtMiss(dm,'missed_actual')+'，漏预测球 '+fmtMiss(dm,'missed_pred')+'；双色球漏开奖球 '+fmtMiss(sm,'missed_actual')+'，漏预测球 '+fmtMiss(sm,'missed_pred')+'</p>';});
+    h+='</div>';
+  }
+  const lm=DATA.latest_miss||{};
+  if(lm.dlt&&lm.ssq){
+    h+='<div class="card"><h2>最新一期逐方法漏球分类</h2>';
+    ['dlt','ssq'].forEach(g=>{const gn=g==='dlt'?'大乐透':'双色球';(rows[g]||[]).forEach(item=>{const m=item.method, info=(lm[g]||{})[m]||{};if(!info)return;const fmt=(arr)=>arr&&arr.length?arr.map(n2).join(' '):'无';const missStr=(info.actual_miss||[]).map(d=>n2(d.ball)+'号('+(d.zone||'')+d.stage+')').join('；')||'无';h+='<p class="note">'+(names[m]||m)+' '+gn+'：中的球 '+fmt(info.hit_pred)+'；没中的预测球 '+fmt(info.missed_pred)+'；漏掉的开奖球 '+missStr+'</p>';});});
     h+='</div>';
   }
   return h;
