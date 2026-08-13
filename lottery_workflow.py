@@ -940,29 +940,29 @@ def method_ticket(game, train, method, seed=20260812):
                 ),
                 -item[0],
             ),
-        )[1]
+        )[1], top
 
     if method == "bayes_avg":
         avg = [
             (z500["bayes"][i] + z150["bayes"][i] + z60["bayes"][i]) / 3
             for i in range(main_K)
         ]
-        main = pick_main(avg)
+        main, main_pool = pick_main(avg)
         note = "贝叶斯模型平均 + 位置后验 + 适中反常规，主推"
     elif method == "hot":
         hot = [f["count_30"] / max(1, min(30, z60["n"])) for f in z60["features"]]
-        main = pick_main(hot)
+        main, main_pool = pick_main(hot)
         note = "短周期热度加权"
     elif method == "cold":
         cold = [f["gap"] / (main_K / main_k) for f in z60["features"]]
-        main = pick_main(cold)
+        main, main_pool = pick_main(cold)
         note = "遗漏回归"
     elif method == "position":
         pos_score = [
             max(z500["position_prob"][p][i] for p in range(main_k))
             for i in range(main_K)
         ]
-        main = pick_main(pos_score)
+        main, main_pool = pick_main(pos_score)
         note = "位置分布后验"
     else:
         rng = random.Random(seed)
@@ -988,16 +988,19 @@ def method_ticket(game, train, method, seed=20260812):
                 best = nums
                 best_key = key
         main = best
+        main_pool = list(range(1, main_K + 1))
         note = "随机机选对照"
 
     if method == "random":
         rng_back = random.Random(seed + 7)
+        back_pool = list(range(1, back_K + 1))
         if game == "dlt":
             back = tuple(sorted(rng_back.sample(range(1, back_K + 1), 2)))
         else:
             back = (rng_back.randint(1, back_K),)
     elif method == "position":
         used = []
+        back_pool = []
         back = []
         for p in range(back_k):
             order = sorted(
@@ -1008,8 +1011,10 @@ def method_ticket(game, train, method, seed=20260812):
             for n in order:
                 if n not in used:
                     used.append(n)
+                    back_pool.append(n)
                     back.append(n)
                     break
+        back_pool = sorted(back_pool)
         back = tuple(sorted(back)) if game == "dlt" else (back[0],)
     else:
         if method == "bayes_avg":
@@ -1035,8 +1040,19 @@ def method_ticket(game, train, method, seed=20260812):
         else:
             blue = max(range(1, back_K + 1), key=lambda n: back_scores[n - 1])
             back = (blue,)
+        back_pool = sorted(
+            range(1, back_K + 1),
+            key=lambda n: back_scores[n - 1],
+            reverse=True,
+        )[:min(5, back_K)]
     combo = (main, back)
-    return {"method": method, "note": note, "combo": combo}
+    return {
+        "method": method,
+        "note": note,
+        "combo": combo,
+        "main_pool": sorted(main_pool),
+        "back_pool": back_pool,
+    }
 
 
 def all_method_tickets(game, train):
@@ -1419,6 +1435,76 @@ def backtest_method_miss(game, rows, method):
     }
 
 
+def analyze_latest_miss(game, rows):
+    if len(rows) < 2:
+        return {}
+    latest = rows[0]
+    train = rows_oldest_first(rows[1:])
+    methods = ["bayes_avg", "funnel", "hot", "cold", "position", "random"]
+    out = {}
+    for m in methods:
+        if m == "funnel":
+            pred = pick_funnel_combo(game, train)
+            main_pool = pred["layers"]["main"][2]
+            back_pool = pred["layers"]["back"][2]
+            combo = pred["combo"]
+        else:
+            ticket = method_ticket(game, train, m, seed=100000 + int(latest["issue"]) % 1000)
+            main_pool = ticket.get("main_pool", [])
+            back_pool = ticket.get("back_pool", [])
+            combo = ticket["combo"]
+        if game == "dlt":
+            act_main, act_back = latest["front"], latest["back"]
+            pred_main, pred_back = combo[0], combo[1]
+        else:
+            act_main, act_back = latest["red"], [latest["blue"]]
+            pred_main, pred_back = combo[0], list(combo[1])
+        hit_pred = sorted(
+            set([x for x in pred_main if x in act_main] + [
+                x for x in pred_back if x in act_back
+            ])
+        )
+        missed_pred = sorted(
+            set([x for x in pred_main if x not in act_main] + [
+                x for x in pred_back if x not in act_back
+            ])
+        )
+        main_zone_name = "前区" if game == "dlt" else "红球"
+        back_zone_name = "后区" if game == "dlt" else "蓝球"
+        actual_miss = []
+        for x in act_main:
+            if x in pred_main:
+                continue
+            actual_miss.append(
+                {
+                    "ball": x,
+                    "zone": main_zone_name,
+                    "stage": "进入候选池但最终未选" if x in main_pool else "被方法排除",
+                }
+            )
+        for x in act_back:
+            if x in pred_back:
+                continue
+            actual_miss.append(
+                {
+                    "ball": x,
+                    "zone": back_zone_name,
+                    "stage": "进入候选池但最终未选" if x in back_pool else "被方法排除",
+                }
+            )
+        out[m] = {
+            "issue": latest["issue"],
+            "actual_main": sorted(act_main),
+            "actual_back": sorted(act_back),
+            "pred_main": sorted(pred_main),
+            "pred_back": sorted(pred_back),
+            "hit_pred": sorted(hit_pred),
+            "missed_pred": sorted(missed_pred),
+            "actual_miss": actual_miss,
+        }
+    return out
+
+
 def hypergeom_at_least_one(K, k, n):
     if n <= 0 or n > K:
         return 0.0
@@ -1487,11 +1573,12 @@ def exclusion_lines(pred, game):
     return lines
 
 
-def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None, method_miss=None):
+def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None, method_miss=None, latest_miss=None):
     reflections = reflections or []
     method_rows = method_rows or {}
     method_stats = method_stats or {}
     method_miss = method_miss or {}
+    latest_miss = latest_miss or {}
     dlt_issue = config["dlt_future"][0]
     ssq_issue = config["ssq_future"][0]
     dlt_date = next(s["date"] for s in config["dlt_schedule"] if s["issue"] == dlt_issue)
@@ -1739,6 +1826,25 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
                 f"  - 双色球：最常漏掉的开奖球 {fmt_actual(sm)}；"
                 f"最常漏掉的预测球 {fmt_pred(sm)}"
             )
+        ml.append("")
+        ml.append("### 最新一期逐方法漏球分类")
+        for game_key, game_name in (("dlt", "大乐透"), ("ssq", "双色球")):
+            for item in method_rows.get(game_key, []):
+                m = item["method"]
+                info = latest_miss.get(game_key, {}).get(m, {})
+                if not info:
+                    continue
+                label = method_names.get(m, m)
+                hit = "、".join(f"{n:02d}" for n in info.get("hit_pred", [])) or "无"
+                miss = "、".join(f"{n:02d}" for n in info.get("missed_pred", [])) or "无"
+                miss_actual = "；".join(
+                    f"{d['ball']:02d}号（{d.get('zone', '')}{d['stage']}）"
+                    for d in info.get("actual_miss", [])
+                ) or "无"
+                ml.append(
+                    f"- {label} {game_name}：中的球 {hit}；没中的预测球 {miss}；"
+                    f"漏掉的开奖球 {miss_actual}"
+                )
         idx = lines.index("## 五、分层漏斗选号（20→15→8-10→单注）")
         lines = lines[:idx] + ml + [""] + lines[idx:]
     trend_lines = [
@@ -1989,7 +2095,9 @@ def main():
     }
     method_stats = {"dlt": {}, "ssq": {}}
     method_miss = {"dlt": {}, "ssq": {}}
+    latest_miss = {"dlt": {}, "ssq": {}}
     for game, rows in (("dlt", dlt_rows), ("ssq", ssq_rows)):
+        latest_miss[game] = analyze_latest_miss(game, rows)
         for item in method_rows[game]:
             method_stats[game][item["method"]] = backtest_method(game, rows, item["method"])
             method_miss[game][item["method"]] = backtest_method_miss(game, rows, item["method"])
@@ -2002,6 +2110,7 @@ def main():
             },
         )
         save_json_file(BASE / "method_miss.json", method_miss)
+        save_json_file(BASE / "latest_miss.json", latest_miss)
     print("大乐透一注：", fmt_combo("dlt", dlt_pred["combo"]))
     print("双色球一注：", fmt_combo("ssq", ssq_pred["combo"]))
 
@@ -2043,7 +2152,7 @@ def main():
             },
         )
 
-    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections, method_rows, method_stats, method_miss)
+    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections, method_rows, method_stats, method_miss, latest_miss)
     print("==> 本期预测已保存：", summary_path)
     print("==> 全部完成")
 
