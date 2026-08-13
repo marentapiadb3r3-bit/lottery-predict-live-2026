@@ -226,8 +226,9 @@ function funnelPick(game,train){
   for(const c of combos(l3,k)){const nums=c.slice().sort((a,b)=>a-b);let s=nums.reduce((a,n)=>a+z60.bayes[n-1],0);s*=1+BOOST*posFit(zFull,nums);ranked.push([s,nums]);}
   ranked.sort((a,b)=>b[0]-a[0]);
   const unusualCount=(nums)=>nums.filter(n=>by60[n]&&by60[n].hotCold!=='热').length;
+  const regionMissing=(nums)=>ranges.filter(([lo,hi])=>!nums.some(n=>n>=lo&&n<=hi)).length;
   let mainCombo=null,bestKey=Infinity,bestScore=-Infinity;
-  ranked.slice(0,20).forEach(([s,nums])=>{const key=Math.abs(unusualCount(nums)-idealUnusual);if(key<bestKey||(key===bestKey&&s>bestScore)){bestKey=key;bestScore=s;mainCombo=nums}});
+  ranked.slice(0,200).forEach(([s,nums])=>{const key=regionMissing(nums)*100+Math.abs(unusualCount(nums)-idealUnusual);if(key<bestKey||(key===bestKey&&s>bestScore)){bestKey=key;bestScore=s;mainCombo=nums}});
   const zb=zoneModel(train,back,BK,bk,500);
   let bl1=regionRound({scores:zb.bayes},range(1,BK),[[1,BK]],[dlt?2:6]);
   const zb150=zoneModel(train,back,BK,bk,150);
@@ -362,6 +363,8 @@ function methodsHtml(){
   let h='<div class="card"><h2>全部方法对照</h2><p class="note">每个方法都标明200期回测任意奖级命中率。</p><table><tr><th>方法</th><th>大乐透</th><th>回测</th><th>双色球</th><th>回测</th></tr>';
   (rows.dlt||[]).forEach(item=>{const m=item.method;const ssq=(rows.ssq||[]).find(x=>x.method===m);const ds=stats.dlt||{}, ss=stats.ssq||{};h+='<tr><td>'+(names[m]||m)+'</td><td>'+fmtPlanTicket('dlt',{nums:item.combo[0],back:item.combo[1]})+'</td><td>'+(ds[m]??'-')+'%</td><td>'+(ssq?fmtPlanTicket('ssq',{nums:ssq.combo[0],back:ssq.combo[1]}):'-')+'</td><td>'+(ss[m]??'-')+'%</td></tr>';});
   h+='</table><div class="ref">主推为贝叶斯模型平均；你的分层分区方法保持不变，仅作对照。</div></div>';
+  const bt=DATA.backtest||{};
+  if(bt.dlt&&bt.ssq){const dl=bt.dlt, sl=bt.ssq;h+='<div class="ref">偏差诊断：大乐透第3层平均含实际号码 '+dl.layer3+' 个，最终命中 '+dl.main+' 个，漏约 '+(dl.layer3-dl.main).toFixed(3)+' 个；双色球第3层含 '+sl.layer3+' 个，最终命中 '+sl.main+' 个，漏约 '+(sl.layer3-sl.main).toFixed(3)+' 个。主要偏差在“最终选一注”这一步。</div>';}
   return h;
 }
 function render(){
