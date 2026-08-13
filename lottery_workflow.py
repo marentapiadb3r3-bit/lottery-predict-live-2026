@@ -626,6 +626,10 @@ def pick_funnel_combo(game, train):
     def unusual_count(nums):
         return sum(1 for n in nums if by60.get(n, {}).get("hotCold") != "热")
 
+    def region_missing(nums):
+        counts = [sum(1 for n in nums if lo <= n <= hi) for lo, hi in ranges]
+        return sum(1 for c in counts if c == 0)
+
     ranked_main = []
     for comb_idx in itertools.combinations(layer3, main_k):
         nums = tuple(sorted(comb_idx))
@@ -633,10 +637,14 @@ def pick_funnel_combo(game, train):
         base_score *= 1 + boost * position_fit(z_full, nums)
         ranked_main.append((base_score, nums))
     ranked_main.sort(key=lambda x: x[0], reverse=True)
-    top_main = ranked_main[:20]
+    top_main = ranked_main[:200]
     best_main = min(
         top_main,
-        key=lambda item: (abs(unusual_count(item[1]) - ideal_unusual), -item[0]),
+        key=lambda item: (
+            region_missing(item[1]),
+            abs(unusual_count(item[1]) - ideal_unusual),
+            -item[0],
+        ),
     )[1]
 
     if game == "dlt":
@@ -866,6 +874,16 @@ def method_ticket(game, train, method, seed=20260812):
 
     def pick_main(scores):
         top = sorted(range(1, main_K + 1), key=lambda n: scores[n - 1], reverse=True)[:14]
+        ranges = region_ranges(game, main_zone)
+        for lo, hi in ranges:
+            if not any(lo <= n <= hi for n in top):
+                best_region = max(
+                    range(lo, hi + 1), key=lambda n: scores[n - 1]
+                )
+                if best_region not in top:
+                    lowest = min(top, key=lambda n: scores[n - 1])
+                    top.remove(lowest)
+                    top.append(best_region)
         ranked = []
         for comb_idx in itertools.combinations(top, main_k):
             nums = tuple(sorted(comb_idx))
@@ -878,10 +896,17 @@ def method_ticket(game, train, method, seed=20260812):
             1 for n in top if by60.get(n, {}).get("hotCold") != "热"
         )
         ideal = min(2 if game == "dlt" else 3, unusual_in_pool)
-        top20 = ranked[:20]
+        top20 = ranked[:200]
+        def region_missing(nums):
+            counts = [
+                sum(1 for n in nums if lo <= n <= hi) for lo, hi in ranges
+            ]
+            return sum(1 for c in counts if c == 0)
+
         return min(
             top20,
             key=lambda item: (
+                region_missing(item[1]),
                 abs(
                     sum(
                         1 for n in item[1] if by60.get(n, {}).get("hotCold") != "热"
@@ -917,6 +942,14 @@ def method_ticket(game, train, method, seed=20260812):
         rng = random.Random(seed)
         by60 = {f["number"]: f for f in z60["features"]}
         ideal_unusual = 2 if game == "dlt" else 3
+        ranges = region_ranges(game, main_zone)
+
+        def region_missing(nums):
+            counts = [
+                sum(1 for n in nums if lo <= n <= hi) for lo, hi in ranges
+            ]
+            return sum(1 for c in counts if c == 0)
+
         best = None
         best_key = None
         for _ in range(300):
@@ -924,7 +957,7 @@ def method_ticket(game, train, method, seed=20260812):
             unusual = sum(
                 1 for n in nums if by60.get(n, {}).get("hotCold") != "热"
             )
-            key = abs(unusual - ideal_unusual)
+            key = (region_missing(nums), abs(unusual - ideal_unusual))
             if best is None or key < best_key or (key == best_key and rng.random() < 0.5):
                 best = nums
                 best_key = key
