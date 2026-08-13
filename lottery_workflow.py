@@ -1800,6 +1800,18 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
                 f"{ssq_rate}% |"
             )
         ml.append("")
+        ml.append("### 六种方法各出一注")
+        for item in method_rows.get("dlt", []):
+            m = item["method"]
+            ssq_item = next(
+                (x for x in method_rows.get("ssq", []) if x["method"] == m), None
+            )
+            label = method_names.get(m, m)
+            ml.append(
+                f"- {label}：大乐透 {fmt_combo('dlt', item['combo'])}；"
+                f"双色球 {fmt_combo('ssq', ssq_item['combo']) if ssq_item else '-'}"
+            )
+        ml.append("")
         ml.append("### 每个方法漏球分析（200期回测）")
         for item in method_rows.get("dlt", []):
             m = item["method"]
