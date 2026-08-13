@@ -21,6 +21,8 @@ def main():
     state = load("model_state.json")
     mc_path = BASE / "method_comparison.json"
     method_comparison = load("method_comparison.json") if mc_path.exists() else {}
+    miss_path = BASE / "method_miss.json"
+    method_miss = load("method_miss.json") if miss_path.exists() else {}
     bt_path = BASE / "mobile_backtest.json"
     backtest = load("mobile_backtest.json") if bt_path.exists() else {
         "dlt": {
@@ -47,6 +49,7 @@ def main():
         "model_state": state,
         "backtest": backtest,
         "method_comparison": method_comparison,
+        "method_miss": method_miss,
     }
     html = TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
     OUT.write_text(html, encoding="utf-8")
@@ -373,6 +376,13 @@ function methodsHtml(){
   }
   const bt=DATA.backtest||{};
   if(bt.dlt&&bt.ssq){const dl=bt.dlt, sl=bt.ssq;h+='<div class="ref">偏差诊断：大乐透第3层平均含实际号码 '+dl.layer3+' 个，最终命中 '+dl.main+' 个，漏约 '+(dl.layer3-dl.main).toFixed(3)+' 个；双色球第3层含 '+sl.layer3+' 个，最终命中 '+sl.main+' 个，漏约 '+(sl.layer3-sl.main).toFixed(3)+' 个。主要偏差在“最终选一注”这一步。</div>';}
+  const miss=DATA.method_miss||{};
+  const fmtMiss=(missObj,key)=>((missObj&&missObj[key])||[]).slice(0,4).map(([n,c])=>n2(n)+'号'+c+'次').join('、')||'无';
+  if(miss.dlt&&miss.ssq){
+    h+='<div class="card"><h2>每个方法漏球分析</h2>';
+    (rows.dlt||[]).forEach(item=>{const m=item.method, dm=miss.dlt[m]||{}, sm=miss.ssq[m]||{};h+='<p class="note">'+(names[m]||m)+'：大乐透漏开奖球 '+fmtMiss(dm,'missed_actual')+'，漏预测球 '+fmtMiss(dm,'missed_pred')+'；双色球漏开奖球 '+fmtMiss(sm,'missed_actual')+'，漏预测球 '+fmtMiss(sm,'missed_pred')+'</p>';});
+    h+='</div>';
+  }
   return h;
 }
 function render(){
