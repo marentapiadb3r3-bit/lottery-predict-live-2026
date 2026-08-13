@@ -1381,6 +1381,44 @@ def backtest_method(game, rows, method):
     return round(wins / n * 100, 2) if n else None
 
 
+def backtest_method_miss(game, rows, method):
+    oldest = rows_oldest_first(rows)
+    miss_actual = {}
+    miss_pred = {}
+    n = 0
+    for t in range(300, len(oldest)):
+        train = oldest[max(0, t - 500):t]
+        target = oldest[t]
+        if method == "funnel":
+            combo = pick_funnel_combo(game, train)["combo"]
+        else:
+            combo = method_ticket(game, train, method, seed=100000 + t)["combo"]
+        if game == "dlt":
+            act_main, act_back = target["front"], target["back"]
+            pred_main, pred_back = combo[0], combo[1]
+        else:
+            act_main, act_back = target["red"], [target["blue"]]
+            pred_main, pred_back = combo[0], list(combo[1])
+        for x in act_main:
+            if x not in pred_main:
+                miss_actual[x] = miss_actual.get(x, 0) + 1
+        for x in act_back:
+            if x not in pred_back:
+                miss_actual[x] = miss_actual.get(x, 0) + 1
+        for x in pred_main:
+            if x not in act_main:
+                miss_pred[x] = miss_pred.get(x, 0) + 1
+        for x in pred_back:
+            if x not in act_back:
+                miss_pred[x] = miss_pred.get(x, 0) + 1
+        n += 1
+    return {
+        "windows": n,
+        "missed_actual": sorted(miss_actual.items(), key=lambda kv: (-kv[1], kv[0]))[:10],
+        "missed_pred": sorted(miss_pred.items(), key=lambda kv: (-kv[1], kv[0]))[:10],
+    }
+
+
 def hypergeom_at_least_one(K, k, n):
     if n <= 0 or n > K:
         return 0.0
@@ -1449,10 +1487,11 @@ def exclusion_lines(pred, game):
     return lines
 
 
-def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None):
+def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None, method_miss=None):
     reflections = reflections or []
     method_rows = method_rows or {}
     method_stats = method_stats or {}
+    method_miss = method_miss or {}
     dlt_issue = config["dlt_future"][0]
     ssq_issue = config["ssq_future"][0]
     dlt_date = next(s["date"] for s in config["dlt_schedule"] if s["issue"] == dlt_issue)
@@ -1672,6 +1711,33 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
                 f"{dlt_rate}% | "
                 f"{fmt_combo('ssq', ssq_item['combo']) if ssq_item else '-'} | "
                 f"{ssq_rate}% |"
+            )
+        ml.append("")
+        ml.append("### 每个方法漏球分析（200期回测）")
+        for item in method_rows.get("dlt", []):
+            m = item["method"]
+            label = method_names.get(m, m)
+            dm = method_miss.get("dlt", {}).get(m, {})
+            sm = method_miss.get("ssq", {}).get(m, {})
+
+            def fmt_actual(miss):
+                return "、".join(
+                    f"{n:02d}号{c}次" for n, c in miss.get("missed_actual", [])[:5]
+                ) or "无"
+
+            def fmt_pred(miss):
+                return "、".join(
+                    f"{n:02d}号{c}次" for n, c in miss.get("missed_pred", [])[:5]
+                ) or "无"
+
+            ml.append(f"- {label}：")
+            ml.append(
+                f"  - 大乐透：最常漏掉的开奖球 {fmt_actual(dm)}；"
+                f"最常漏掉的预测球 {fmt_pred(dm)}"
+            )
+            ml.append(
+                f"  - 双色球：最常漏掉的开奖球 {fmt_actual(sm)}；"
+                f"最常漏掉的预测球 {fmt_pred(sm)}"
             )
         idx = lines.index("## 五、分层漏斗选号（20→15→8-10→单注）")
         lines = lines[:idx] + ml + [""] + lines[idx:]
@@ -1922,9 +1988,11 @@ def main():
         "ssq": all_method_tickets("ssq", ssq_train),
     }
     method_stats = {"dlt": {}, "ssq": {}}
+    method_miss = {"dlt": {}, "ssq": {}}
     for game, rows in (("dlt", dlt_rows), ("ssq", ssq_rows)):
         for item in method_rows[game]:
             method_stats[game][item["method"]] = backtest_method(game, rows, item["method"])
+            method_miss[game][item["method"]] = backtest_method_miss(game, rows, item["method"])
     if args.headless:
         save_json_file(
             BASE / "method_comparison.json",
@@ -1933,6 +2001,7 @@ def main():
                 "stats": method_stats,
             },
         )
+        save_json_file(BASE / "method_miss.json", method_miss)
     print("大乐透一注：", fmt_combo("dlt", dlt_pred["combo"]))
     print("双色球一注：", fmt_combo("ssq", ssq_pred["combo"]))
 
@@ -1974,7 +2043,7 @@ def main():
             },
         )
 
-    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections, method_rows, method_stats)
+    summary_path = write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections, method_rows, method_stats, method_miss)
     print("==> 本期预测已保存：", summary_path)
     print("==> 全部完成")
 
