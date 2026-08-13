@@ -1,7 +1,7 @@
 {
   "dlt": {
     "windows": 200,
-    "main_mean": 0.705,
+    "main_mean": 0.715,
     "back_rate": 0.36,
     "layer1_mean": 4.16,
     "layer2_mean": 2.78,
@@ -10,7 +10,7 @@
   },
   "ssq": {
     "windows": 200,
-    "main_mean": 1.035,
+    "main_mean": 1.075,
     "back_rate": 0.09,
     "layer1_mean": 4.94,
     "layer2_mean": 3.25,
