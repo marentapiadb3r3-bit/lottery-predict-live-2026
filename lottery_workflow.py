@@ -553,15 +553,25 @@ def balanced_layer(zone, pool, target, min_per_region, ranges):
 
 def region_round(zone, pool, ranges, removes):
     """只按区域独立排除，不混区筛选。"""
+    result, _ = region_round_trace(zone, pool, ranges, removes)
+    return result
+
+
+def region_round_trace(zone, pool, ranges, removes):
+    """按区域独立排除，并返回每层每个区域被去掉的号码。"""
     result = list(pool)
+    drops = []
     for (lo, hi), remove_count in zip(ranges, removes):
         region_nums = [n for n in result if lo <= n <= hi]
         if len(region_nums) <= remove_count + 1:
+            drops.append([])
             continue
         region_nums.sort(key=lambda n: zone["scores"][n - 1])
-        drop = set(region_nums[:remove_count])
-        result = [n for n in result if n not in drop]
-    return sorted(result)
+        drop = region_nums[:remove_count]
+        drops.append(sorted(drop))
+        drop_set = set(drop)
+        result = [n for n in result if n not in drop_set]
+    return sorted(result), drops
 
 
 def pick_funnel_combo(game, train):
@@ -577,11 +587,11 @@ def pick_funnel_combo(game, train):
 
     ranges = region_ranges(game, main_zone)
     z_full = zone_bayes(train, main_zone, main_K, main_k, window=500)
-    layer1 = region_round({"scores": z_full["bayes"]}, list(range(1, main_K + 1)), ranges, [2, 2, 2])
+    layer1, drops1 = region_round_trace({"scores": z_full["bayes"]}, list(range(1, main_K + 1)), ranges, [2, 2, 2])
     z150 = zone_bayes(train, main_zone, main_K, main_k, window=150)
-    layer2 = region_round({"scores": z150["bayes"]}, layer1, ranges, [3, 3, 3])
+    layer2, drops2 = region_round_trace({"scores": z150["bayes"]}, layer1, ranges, [3, 3, 3])
     z60 = zone_bayes(train, main_zone, main_K, main_k, window=60)
-    layer3 = region_round({"scores": z60["bayes"]}, layer2, ranges, [4, 4, 4])
+    layer3, drops3 = region_round_trace({"scores": z60["bayes"]}, layer2, ranges, [4, 4, 4])
     if len(layer3) < main_k + 3:
         extra = [n for n in layer2 if n not in layer3]
         extra.sort(key=lambda n: z60["bayes"][n - 1], reverse=True)
@@ -602,11 +612,11 @@ def pick_funnel_combo(game, train):
 
     back_ranges = [(1, back_K)]
     zb_full = zone_bayes(train, back_zone, back_K, back_k, window=500)
-    bl1 = region_round({"scores": zb_full["bayes"]}, list(range(1, back_K + 1)), back_ranges, [2 if game == "dlt" else 6])
+    bl1, bd1 = region_round_trace({"scores": zb_full["bayes"]}, list(range(1, back_K + 1)), back_ranges, [2 if game == "dlt" else 6])
     zb150 = zone_bayes(train, back_zone, back_K, back_k, window=150)
-    bl2 = region_round({"scores": zb150["bayes"]}, bl1, back_ranges, [3])
+    bl2, bd2 = region_round_trace({"scores": zb150["bayes"]}, bl1, back_ranges, [3])
     zb60 = zone_bayes(train, back_zone, back_K, back_k, window=60)
-    bl3 = region_round({"scores": zb60["bayes"]}, bl2, back_ranges, [4])
+    bl3, bd3 = region_round_trace({"scores": zb60["bayes"]}, bl2, back_ranges, [4])
     if len(bl3) < back_k + 1:
         extra = [n for n in bl2 if n not in bl3]
         extra.sort(key=lambda n: zb60["bayes"][n - 1], reverse=True)
@@ -825,11 +835,25 @@ def pick_funnel_combo(game, train):
         if not replaced:
             break
 
+    exclusions = {
+        "main": [
+            {"layer": 1, "regions": drops1},
+            {"layer": 2, "regions": drops2},
+            {"layer": 3, "regions": drops3},
+        ],
+        "back": [
+            {"layer": 1, "regions": bd1},
+            {"layer": 2, "regions": bd2},
+            {"layer": 3, "regions": bd3},
+        ],
+    }
+
     return {
         "game": game,
         "combo": combo,
         "candidate_main_count": math.comb(len(layer3), main_k),
         "selection_reason": selection_reason,
+        "exclusions": exclusions,
         "repeat_adjusted": repeat_adjusted,
         "recent_repeat_adjusted": recent_repeat_adjusted,
         "prize_repeat_adjusted": prize_repeat_adjusted,
@@ -851,10 +875,12 @@ def pick_funnel_combo(game, train):
 def method_ticket(game, train, method, seed=20260812):
     """每种方法各出一注，主推方法为贝叶斯模型平均。"""
     if method == "funnel":
+        funnel_pred = pick_funnel_combo(game, train)
         return {
             "method": "funnel",
             "note": "四区域独立分层漏斗",
-            "combo": pick_funnel_combo(game, train)["combo"],
+            "combo": funnel_pred["combo"],
+            "exclusions": funnel_pred.get("exclusions"),
         }
     state = load_model_state()
     boost = state["position_boost"]
@@ -1398,6 +1424,31 @@ def funnel_lines(pred, game):
     return lines
 
 
+def exclusion_lines(pred, game):
+    name = "大乐透" if game == "dlt" else "双色球"
+    ex = pred.get("exclusions") or {}
+    labels = ["一区", "二区", "三区"]
+    lines = [f"### {name} 每一层排除明细"]
+    for item in ex.get("main", []):
+        parts = []
+        for idx, nums in enumerate(item["regions"], 1):
+            if nums:
+                parts.append(
+                    labels[idx - 1] + "去掉 " + " ".join(f"{n:02d}" for n in nums)
+                )
+        all_removed = [n for region in item["regions"] for n in region]
+        lines.append(
+            f"- 第{item['layer']}层：{'；'.join(parts) if parts else '未排除'}，"
+            f"共去掉 {len(all_removed)} 个"
+        )
+    for item in ex.get("back", []):
+        nums = item["regions"][0] if item["regions"] else []
+        text = " ".join(f"{n:02d}" for n in nums) if nums else "未排除"
+        lines.append(f"- 后区第{item['layer']}层：去掉 {text}，共去掉 {len(nums)} 个")
+    lines.append("")
+    return lines
+
+
 def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=None, method_rows=None, method_stats=None):
     reflections = reflections or []
     method_rows = method_rows or {}
@@ -1506,7 +1557,9 @@ def write_next_prediction(config, dlt_pred, ssq_pred, backtests, reflections=Non
         "",
     ]
     lines.extend(funnel_lines(dlt_pred, "dlt"))
+    lines.extend(exclusion_lines(dlt_pred, "dlt"))
     lines.extend(funnel_lines(ssq_pred, "ssq"))
+    lines.extend(exclusion_lines(ssq_pred, "ssq"))
     lines.append("逐层变化分析（200期历史回测）：")
     lines.append(
         "- 大乐透：第1层平均命中 "
